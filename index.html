@@ -1,0 +1,328 @@
+<!-- need to crate a basic webpage where user can upload a resume and it will call the greenhouse API to display related jobs based on the resume content. The webpage should have a simple form for file upload and a section to display the job listings returned from the API. Leave all the styling to the css file. -->
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JobLock</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="HomeScreen">
+        <h1>Welcome to JobLock</h1>
+        <p class="subtitle">
+            Upload your resume to discover matching jobs.
+        </p>
+
+        <form id="resumeForm" enctype="multipart/form-data">
+            <input
+                type="file"
+                id="resumeInput"
+                name="resume"
+                accept=".pdf,.docx"
+                required
+            >
+            <button type="submit" id="submitButton">
+                Find Jobs
+            </button>
+        </form>
+
+        <p id="statusMessage" role="status" aria-live="polite"></p>
+        <div id="jobListings" class="job-listings"></div>
+    </div>
+
+<script>
+    const resumeForm = document.getElementById("resumeForm");
+    const resumeInput = document.getElementById("resumeInput");
+    const jobListings = document.getElementById("jobListings");
+    const statusMessage = document.getElementById("statusMessage");
+    const submitButton = document.getElementById("submitButton");
+
+    // Flask backend address.
+    const API_BASE_URL = "http://127.0.0.1:5000";
+
+    const knownSkills = [
+        "python", "java", "javascript", "typescript",
+        "html", "css", "sql", "mysql", "postgresql",
+        "aws", "azure", "docker", "kubernetes",
+        "flask", "django", "react", "node.js",
+        "git", "github", "ci/cd", "linux",
+        "rest api", "machine learning", "data analysis",
+        "software engineering", "troubleshooting",
+        "networking", "agile", "spring boot",
+        "terraform", "redis", "microservices",
+        "software development", "api", "backend",
+        "frontend", "testing", "debugging",
+        "continuous integration", "continuous deployment",
+        "technical support", "customer support",
+        "project management", "communication",
+        "leadership", "excel", "power bi",
+        "data analysis", "cybersecurity", "it support"
+    ];
+
+    function stripHtml(html) {
+        const parser = new DOMParser();
+        const document = parser.parseFromString(
+            html || "",
+            "text/html"
+        );
+
+        return (document.body.textContent || "")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    function extractSkills(text) {
+        const normalizedText = text.toLowerCase();
+
+        return [...new Set(knownSkills)].filter(skill => {
+            const escaped = skill.replace(
+                /[.*+?^${}()|[\]\\]/g, "\\$&"
+            );
+
+            const pattern = new RegExp(
+                `(^|[^a-z0-9+#.])${escaped}(?=$|[^a-z0-9+#.])`,
+                "i"
+            );
+
+            return pattern.test(normalizedText);
+        });
+    }
+
+    function getJobMatch(job, resumeSkills) {
+        const description = stripHtml(
+            job.content || job.description || ""
+        );
+
+        const jobText = [
+            job.title || "",
+            job.company_name || "",
+            description
+        ].join(" ").toLowerCase();
+
+        const matchedSkills = resumeSkills.filter(skill => {
+            const escaped = skill.replace(
+                /[.*+?^${}()|[\]\\]/g, "\\$&"
+            );
+
+            const pattern = new RegExp(
+                `(^|[^a-z0-9+#.])${escaped}(?=$|[^a-z0-9+#.])`,
+                "i"
+            );
+
+            return pattern.test(jobText);
+        });
+
+        // Score based on the fraction of resume skills found in the job.
+        const score = resumeSkills.length
+            ? Math.round(
+                matchedSkills.length / resumeSkills.length * 100
+            )
+            : 0;
+
+        return { score, matchedSkills, description };
+    }
+
+    function getLocation(job) {
+        if (typeof job.location === "string") {
+            return job.location;
+        }
+
+        return job.location?.name || "Location not specified";
+    }
+
+    function isUSOrRemote(job) {
+        // Greenhouse listings do not always expose structured country
+        // or remote-work fields. This is only a basic text-based filter.
+        const location = getLocation(job).toLowerCase();
+        const description = stripHtml(
+            job.content || job.description || ""
+        ).toLowerCase();
+
+        const remote =
+            /\b(remote|work from home|work remotely|anywhere in the us|us remote|united states remote)\b/i
+                .test(location + " " + description);
+
+        const usLocation =
+            /\b(united states|u\.s\.a?\.?|usa|remote - us|new york|california|texas|pennsylvania|new jersey|massachusetts|washington|illinois|colorado|florida|georgia|virginia|maryland|north carolina|south carolina|ohio|michigan|oregon|arizona|utah|minnesota|wisconsin|connecticut|delaware|rhode island|maine|new hampshire|vermont|alaska|hawaii|idaho|iowa|kansas|kentucky|louisiana|mississippi|missouri|montana|nebraska|nevada|new mexico|north dakota|oklahoma|south dakota|tennessee|west virginia|wyoming|district of columbia)\b/i
+                .test(location);
+
+        // Avoid including a job just because its description says
+        // the company serves customers in the United States.
+        return remote || usLocation;
+    }
+
+    function displayJobListings(jobs, resumeSkills) {
+        jobListings.replaceChildren();
+
+        if (!resumeSkills.length) {
+            statusMessage.textContent =
+                "We couldn't identify recognized skills in your resume.";
+            return;
+        }
+
+        // Deduplicate by URL, then rank matching jobs.
+        const seen = new Set();
+
+        const uniqueJobs = jobs.filter(job => {
+            const key = job.absolute_url ||
+                `${job.company_name || ""}:${job.id || job.title}`;
+
+            if (seen.has(key)) return false;
+
+            seen.add(key);
+            return true;
+        });
+
+        const rankedJobs = uniqueJobs
+            .map(job => ({
+                job,
+                ...getJobMatch(job, resumeSkills)
+            }))
+            .filter(item =>
+                item.matchedSkills.length > 0 &&
+                isUSOrRemote(item.job)
+            )
+            .sort((a, b) => b.score - a.score);
+
+        if (!rankedJobs.length) {
+            statusMessage.textContent =
+                "No matching U.S. or remote jobs were found in the configured employer boards. Try adding more boards or reviewing the location filter.";
+            return;
+        }
+
+        statusMessage.textContent =
+            `Found ${rankedJobs.length} matching U.S. or remote jobs across your configured Greenhouse boards.`;
+
+        rankedJobs.forEach(({ job, score, matchedSkills }) => {
+            const card = document.createElement("article");
+            card.className = "job-card";
+
+            const title = document.createElement("h2");
+            title.textContent = job.title || "Untitled position";
+
+            const company = document.createElement("p");
+            company.textContent =
+                `Company: ${job.company_name || "Not specified"}`;
+
+            const location = document.createElement("p");
+            location.textContent = `Location: ${getLocation(job)}`;
+
+            const match = document.createElement("p");
+            match.textContent = `Keyword match: ${score}%`;
+
+            const skills = document.createElement("p");
+            skills.textContent =
+                `Matching skills: ${matchedSkills.join(", ")}`;
+
+            const description = document.createElement("p");
+            description.textContent =
+                stripHtml(job.content || job.description || "")
+                    .slice(0, 300) || "No description available.";
+
+            const link = document.createElement("a");
+            link.textContent = "View and Apply";
+            link.href = job.absolute_url || "#";
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+
+            if (!job.absolute_url) {
+                link.removeAttribute("target");
+                link.textContent = "Application link unavailable";
+            }
+
+            card.append(
+                title,
+                company,
+                location,
+                match,
+                skills,
+                description,
+                link
+            );
+
+            jobListings.appendChild(card);
+        });
+    }
+
+    resumeForm.addEventListener("submit", async event => {
+        event.preventDefault();
+
+        const file = resumeInput.files[0];
+
+        jobListings.replaceChildren();
+        statusMessage.textContent = "";
+
+        if (!file) {
+            statusMessage.textContent =
+                "Please select a resume first.";
+            return;
+        }
+
+        if (!/\.(pdf|docx)$/i.test(file.name)) {
+            statusMessage.textContent =
+                "Please upload a PDF or DOCX resume.";
+            return;
+        }
+
+        if (file.size > 5 * 1024 * 1024) {
+            statusMessage.textContent =
+                "Your resume must be 5 MB or smaller.";
+            return;
+        }
+
+        submitButton.disabled = true;
+        submitButton.textContent = "Searching...";
+        statusMessage.textContent =
+            "Uploading resume and searching employer boards...";
+
+        try {
+            const formData = new FormData();
+            formData.append("resume", file);
+
+            // The Flask endpoint must extract resume text, call
+            // fetch_greenhouse_jobs(), and return the jobs in JSON.
+            const response = await fetch(
+                `${API_BASE_URL}/search-jobs`,
+                {
+                    method: "POST",
+                    body: formData
+                }
+            );
+
+            const result = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    result.error || "Job search failed."
+                );
+            }
+
+            if (!Array.isArray(result.jobs)) {
+                throw new Error(
+                    "The backend response is missing its jobs array. Check the /search-jobs route."
+                );
+            }
+
+            const resumeText = result.text || "";
+            const resumeSkills = extractSkills(resumeText);
+
+            displayJobListings(result.jobs, resumeSkills);
+
+            console.log("Recognized resume skills:", resumeSkills);
+            console.log("Jobs received from Flask:", result.jobs.length);
+
+        } catch (error) {
+            console.error("JobLock error:", error);
+            statusMessage.textContent =
+                `${error.message} Check that Flask is running and that /search-jobs is implemented.`;
+        } finally {
+            submitButton.disabled = false;
+            submitButton.textContent = "Find Jobs";
+        }
+    });
+</script>
+</body>
+</html>
