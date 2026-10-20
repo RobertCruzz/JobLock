@@ -63,15 +63,13 @@
     ];
 
     function stripHtml(html) {
-        const parser = new DOMParser();
-        const document = parser.parseFromString(
-            html || "",
-            "text/html"
-        );
-
-        return (document.body.textContent || "")
-            .replace(/\s+/g, " ")
-            .trim();
+    if (!html) return "";
+    const parser = new DOMParser();
+    const decodedDoc = parser.parseFromString(html, "text/html");
+    const decodedString = decodedDoc.body.textContent || "";
+    const finalDoc = parser.parseFromString(decodedString, "text/html");
+    const cleanText = finalDoc.body.textContent || "";
+    return cleanText.replace(/\s+/g, " ").trim();
     }
 
     function extractSkills(text) {
